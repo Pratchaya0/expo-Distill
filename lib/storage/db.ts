@@ -1,12 +1,16 @@
+import { Platform } from 'react-native';
 import * as SQLite from 'expo-sqlite';
 import type { SQLiteDatabase, SQLiteBindValue } from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system/legacy';
 import type { Recording, Note, PromptTemplate, TranscriptSegment, ActionItem } from '@/types';
 
-// Lazy async singleton — avoids openDatabaseSync which requires SharedArrayBuffer
+const isWeb = Platform.OS === 'web';
+
+// Lazy async singleton — openDatabaseAsync works without SharedArrayBuffer
 let _db: SQLiteDatabase | null = null;
 
 async function getDB(): Promise<SQLiteDatabase> {
+  if (isWeb) throw new Error('SQLite not available on web');
   if (!_db) {
     _db = await SQLite.openDatabaseAsync('distill.db');
   }
@@ -14,6 +18,7 @@ async function getDB(): Promise<SQLiteDatabase> {
 }
 
 export async function initDB(): Promise<void> {
+  if (isWeb) return; // no-op on web; native features unavailable in browser preview
   const db = await getDB();
 
   await db.execAsync(`
@@ -85,6 +90,7 @@ function rowToRecording(row: Record<string, unknown>): Recording & { id: number 
 }
 
 export async function saveRecording(r: Omit<Recording, 'id'>): Promise<number> {
+  if (isWeb) return 0;
   const db = await getDB();
   const result = await db.runAsync(
     `INSERT INTO recordings (title, duration, audioPath, tags, isFavorite, language, templateId, createdAt)
@@ -96,6 +102,7 @@ export async function saveRecording(r: Omit<Recording, 'id'>): Promise<number> {
 }
 
 export async function getRecording(id: number): Promise<(Recording & { id: number }) | null> {
+  if (isWeb) return null;
   const db = await getDB();
   const row = await db.getFirstAsync<Record<string, unknown>>(
     'SELECT * FROM recordings WHERE id = ?', id,
@@ -104,6 +111,7 @@ export async function getRecording(id: number): Promise<(Recording & { id: numbe
 }
 
 export async function listRecordings(favoritesOnly = false): Promise<(Recording & { id: number })[]> {
+  if (isWeb) return [];
   const db = await getDB();
   const rows = await db.getAllAsync<Record<string, unknown>>(
     favoritesOnly
@@ -133,11 +141,13 @@ export async function updateRecording(
 
   if (sets.length === 0) return;
   vals.push(id);
+  if (isWeb) return;
   const db = await getDB();
   await db.runAsync(`UPDATE recordings SET ${sets.join(', ')} WHERE id = ?`, vals);
 }
 
 export async function deleteRecording(id: number): Promise<void> {
+  if (isWeb) return;
   const db = await getDB();
   const rec = await getRecording(id);
   if (rec) await FileSystem.deleteAsync(rec.audioPath, { idempotent: true });
@@ -148,6 +158,7 @@ export async function deleteRecording(id: number): Promise<void> {
 // ── Notes ────────────────────────────────────────────────────────────────────
 
 export async function saveNote(n: Omit<Note, 'id'>): Promise<number> {
+  if (isWeb) return 0;
   const db = await getDB();
   const result = await db.runAsync(
     'INSERT INTO notes (recordingId, timestamp, content, imagePaths) VALUES (?, ?, ?, ?)',
@@ -157,6 +168,7 @@ export async function saveNote(n: Omit<Note, 'id'>): Promise<number> {
 }
 
 export async function getNotes(recordingId: number): Promise<(Note & { id: number })[]> {
+  if (isWeb) return [];
   const db = await getDB();
   const rows = await db.getAllAsync<Record<string, unknown>>(
     'SELECT * FROM notes WHERE recordingId = ? ORDER BY timestamp ASC', recordingId,
@@ -180,11 +192,13 @@ export async function updateNote(
   if (patch.imagePaths !== undefined) { sets.push('imagePaths = ?'); vals.push(JSON.stringify(patch.imagePaths)); }
   if (!sets.length) return;
   vals.push(id);
+  if (isWeb) return;
   const db = await getDB();
   await db.runAsync(`UPDATE notes SET ${sets.join(', ')} WHERE id = ?`, vals);
 }
 
 export async function deleteNote(id: number): Promise<void> {
+  if (isWeb) return;
   const db = await getDB();
   await db.runAsync('DELETE FROM notes WHERE id = ?', id);
 }
@@ -192,6 +206,7 @@ export async function deleteNote(id: number): Promise<void> {
 // ── Templates ────────────────────────────────────────────────────────────────
 
 export async function listTemplates(): Promise<PromptTemplate[]> {
+  if (isWeb) return [];
   const db = await getDB();
   const rows = await db.getAllAsync<Record<string, unknown>>('SELECT * FROM templates');
   return rows.map((r) => ({
@@ -204,6 +219,7 @@ export async function listTemplates(): Promise<PromptTemplate[]> {
 }
 
 export async function saveTemplate(t: PromptTemplate): Promise<void> {
+  if (isWeb) return;
   const db = await getDB();
   await db.runAsync(
     `INSERT OR REPLACE INTO templates (id, name, description, systemPrompt, tags)
@@ -213,6 +229,7 @@ export async function saveTemplate(t: PromptTemplate): Promise<void> {
 }
 
 export async function deleteTemplate(id: string): Promise<void> {
+  if (isWeb) return;
   const db = await getDB();
   await db.runAsync('DELETE FROM templates WHERE id = ?', id);
 }
