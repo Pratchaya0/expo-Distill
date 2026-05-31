@@ -1,11 +1,21 @@
 import * as SQLite from 'expo-sqlite';
-import type { SQLiteBindValue } from 'expo-sqlite';
+import type { SQLiteDatabase, SQLiteBindValue } from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system/legacy';
 import type { Recording, Note, PromptTemplate, TranscriptSegment, ActionItem } from '@/types';
 
-const db = SQLite.openDatabaseSync('distill.db');
+// Lazy async singleton — avoids openDatabaseSync which requires SharedArrayBuffer
+let _db: SQLiteDatabase | null = null;
+
+async function getDB(): Promise<SQLiteDatabase> {
+  if (!_db) {
+    _db = await SQLite.openDatabaseAsync('distill.db');
+  }
+  return _db;
+}
 
 export async function initDB(): Promise<void> {
+  const db = await getDB();
+
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
 
@@ -45,7 +55,6 @@ export async function initDB(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_notes_recordingId ON notes(recordingId);
   `);
 
-  // Ensure recording directory exists
   const dir = FileSystem.documentDirectory + 'recordings/';
   const info = await FileSystem.getInfoAsync(dir);
   if (!info.exists) await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
@@ -75,9 +84,8 @@ function rowToRecording(row: Record<string, unknown>): Recording & { id: number 
   };
 }
 
-export async function saveRecording(
-  r: Omit<Recording, 'id'>,
-): Promise<number> {
+export async function saveRecording(r: Omit<Recording, 'id'>): Promise<number> {
+  const db = await getDB();
   const result = await db.runAsync(
     `INSERT INTO recordings (title, duration, audioPath, tags, isFavorite, language, templateId, createdAt)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -88,6 +96,7 @@ export async function saveRecording(
 }
 
 export async function getRecording(id: number): Promise<(Recording & { id: number }) | null> {
+  const db = await getDB();
   const row = await db.getFirstAsync<Record<string, unknown>>(
     'SELECT * FROM recordings WHERE id = ?', id,
   );
@@ -95,6 +104,7 @@ export async function getRecording(id: number): Promise<(Recording & { id: numbe
 }
 
 export async function listRecordings(favoritesOnly = false): Promise<(Recording & { id: number })[]> {
+  const db = await getDB();
   const rows = await db.getAllAsync<Record<string, unknown>>(
     favoritesOnly
       ? 'SELECT * FROM recordings WHERE isFavorite = 1 ORDER BY createdAt DESC'
@@ -108,7 +118,7 @@ export async function updateRecording(
   patch: Partial<Omit<Recording, 'id'>>,
 ): Promise<void> {
   const sets: string[] = [];
-  const vals: unknown[] = [];
+  const vals: SQLiteBindValue[] = [];
 
   if (patch.title !== undefined) { sets.push('title = ?'); vals.push(patch.title); }
   if (patch.duration !== undefined) { sets.push('duration = ?'); vals.push(patch.duration); }
@@ -123,23 +133,22 @@ export async function updateRecording(
 
   if (sets.length === 0) return;
   vals.push(id);
-  await db.runAsync(`UPDATE recordings SET ${sets.join(', ')} WHERE id = ?`, vals as SQLiteBindValue[]);
+  const db = await getDB();
+  await db.runAsync(`UPDATE recordings SET ${sets.join(', ')} WHERE id = ?`, vals);
 }
 
 export async function deleteRecording(id: number): Promise<void> {
+  const db = await getDB();
   const rec = await getRecording(id);
-  if (rec) {
-    await FileSystem.deleteAsync(rec.audioPath, { idempotent: true });
-  }
+  if (rec) await FileSystem.deleteAsync(rec.audioPath, { idempotent: true });
   await db.runAsync('DELETE FROM recordings WHERE id = ?', id);
   await db.runAsync('DELETE FROM notes WHERE recordingId = ?', id);
 }
 
 // ── Notes ────────────────────────────────────────────────────────────────────
 
-export async function saveNote(
-  n: Omit<Note, 'id'>,
-): Promise<number> {
+export async function saveNote(n: Omit<Note, 'id'>): Promise<number> {
+  const db = await getDB();
   const result = await db.runAsync(
     'INSERT INTO notes (recordingId, timestamp, content, imagePaths) VALUES (?, ?, ?, ?)',
     n.recordingId, n.timestamp, n.content, JSON.stringify(n.imagePaths),
@@ -148,6 +157,7 @@ export async function saveNote(
 }
 
 export async function getNotes(recordingId: number): Promise<(Note & { id: number })[]> {
+  const db = await getDB();
   const rows = await db.getAllAsync<Record<string, unknown>>(
     'SELECT * FROM notes WHERE recordingId = ? ORDER BY timestamp ASC', recordingId,
   );
@@ -160,23 +170,29 @@ export async function getNotes(recordingId: number): Promise<(Note & { id: numbe
   }));
 }
 
-export async function updateNote(id: number, patch: Partial<Pick<Note, 'content' | 'imagePaths'>>): Promise<void> {
+export async function updateNote(
+  id: number,
+  patch: Partial<Pick<Note, 'content' | 'imagePaths'>>,
+): Promise<void> {
   const sets: string[] = [];
-  const vals: unknown[] = [];
+  const vals: SQLiteBindValue[] = [];
   if (patch.content !== undefined) { sets.push('content = ?'); vals.push(patch.content); }
   if (patch.imagePaths !== undefined) { sets.push('imagePaths = ?'); vals.push(JSON.stringify(patch.imagePaths)); }
   if (!sets.length) return;
   vals.push(id);
-  await db.runAsync(`UPDATE notes SET ${sets.join(', ')} WHERE id = ?`, vals as SQLiteBindValue[]);
+  const db = await getDB();
+  await db.runAsync(`UPDATE notes SET ${sets.join(', ')} WHERE id = ?`, vals);
 }
 
 export async function deleteNote(id: number): Promise<void> {
+  const db = await getDB();
   await db.runAsync('DELETE FROM notes WHERE id = ?', id);
 }
 
 // ── Templates ────────────────────────────────────────────────────────────────
 
 export async function listTemplates(): Promise<PromptTemplate[]> {
+  const db = await getDB();
   const rows = await db.getAllAsync<Record<string, unknown>>('SELECT * FROM templates');
   return rows.map((r) => ({
     id: r.id as string,
@@ -188,6 +204,7 @@ export async function listTemplates(): Promise<PromptTemplate[]> {
 }
 
 export async function saveTemplate(t: PromptTemplate): Promise<void> {
+  const db = await getDB();
   await db.runAsync(
     `INSERT OR REPLACE INTO templates (id, name, description, systemPrompt, tags)
      VALUES (?, ?, ?, ?, ?)`,
@@ -196,5 +213,6 @@ export async function saveTemplate(t: PromptTemplate): Promise<void> {
 }
 
 export async function deleteTemplate(id: string): Promise<void> {
+  const db = await getDB();
   await db.runAsync('DELETE FROM templates WHERE id = ?', id);
 }
